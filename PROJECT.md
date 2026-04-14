@@ -64,15 +64,15 @@ pyinstaller --onefile --noconsole pdfvoz.py -n pdfvoz
 - **Bookmark salvo antes do speak_sync**: garante que posição não se perde se o app fechar durante a fala
 
 ## Estado Atual
-- v1.0 — 2026-04-14
+- v1.1 — 2026-04-14
 - Funcional: extração PDF/EPUB, TTS edge-tts + pyttsx3, CLI + GUI, bookmark
-- PyInstaller ainda não configurado
+- Pré-buffer implementado: sem pausa entre parágrafos
+- Ícone personalizado (livro + ondas sonoras)
+- Executáveis instalados em C:\Windows\System32\
 
 ## Próximos Passos
-- [ ] Criar arquivos .spec para PyInstaller
-- [ ] Build e instalar exe em C:\Windows\System32\pdfvoz.exe
 - [ ] Suporte a velocidade sem alterar pitch (resample de áudio)
-- [ ] Pré-buffer: gerar próximo parágrafo enquanto o atual toca
+- [ ] Testar com livros reais e ajustar heurística de capítulos
 
 ## Problemas Conhecidos
 - Gap de 1-3 segundos entre parágrafos (tempo de geração edge-tts)
