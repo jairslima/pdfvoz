@@ -176,11 +176,19 @@ class Reader:
                 if self.on_progress:
                     self.on_progress(ch_idx, p_idx, chapter["title"], len(paras))
 
+                # Prefetch do próximo parágrafo: disparado quando o áudio atual
+                # começa a tocar, usando o tempo de reprodução para gerar adiantado.
+                next_idx = p_idx + 1
+                def _on_playing(ni=next_idx, ch=chapter):
+                    if ni < len(ch["paragraphs"]) and not self._skip.is_set():
+                        self.tts.prefetch(ch["paragraphs"][ni])
+
                 self.tts.speak_sync(
                     paras[p_idx],
                     stop_event=self._stop,
                     skip_event=self._skip,
                     pause_event=self._pause,
+                    on_playing=_on_playing,
                 )
 
                 if self._stop.is_set() or self._skip.is_set():

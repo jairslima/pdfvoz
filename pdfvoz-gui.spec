@@ -38,6 +38,7 @@ exe = EXE(
     a.datas,
     [],
     name='pdfvoz-gui',
+    icon='pdfvoz.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

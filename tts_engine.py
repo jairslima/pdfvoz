@@ -168,6 +168,10 @@ class TTSEngine:
     Motor TTS unificado.
     offline=False: usa edge-tts com fallback para pyttsx3.
     offline=True: usa apenas pyttsx3.
+
+    Pré-buffer: ao iniciar a reprodução do parágrafo N, o caller pode disparar
+    prefetch(N+1) — a geração acontece em background enquanto o áudio de N toca,
+    eliminando a pausa entre parágrafos.
     """
 
     def __init__(self, offline: bool = False, speed: float = 1.0):
@@ -175,6 +179,15 @@ class TTSEngine:
         self.speed = speed
         self._player = AudioPlayer()
         self._online_ok = True
+
+        # Cache de pré-geração: chave = hash(text), valor = (data, sr)
+        self._cache: dict[int, tuple] = {}
+        self._cache_lock = threading.Lock()
+        self._prefetch_thread: Optional[threading.Thread] = None
+
+    # ------------------------------------------------------------------
+    # Geração de áudio
+    # ------------------------------------------------------------------
 
     def generate_audio(self, text: str):
         """Gera (data, samplerate). Retorna (None, 0) em caso de falha."""
@@ -188,42 +201,118 @@ class TTSEngine:
 
         return _generate_offline(text, self.speed)
 
+    def prefetch(self, text: str):
+        """
+        Inicia a geração de áudio em background para uso futuro.
+        Mantém no máximo 1 entrada no cache (o próximo parágrafo).
+        Silencioso: ignora erros.
+        """
+        key = hash(text)
+        with self._cache_lock:
+            if key in self._cache:
+                return  # já gerado
+            # Limpa entradas antigas para não acumular
+            self._cache.clear()
+
+        # Aguarda prefetch anterior se ainda rodando
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            return  # já há uma geração em andamento
+
+        def _do():
+            try:
+                data, sr = self.generate_audio(text)
+                if data is not None:
+                    with self._cache_lock:
+                        self._cache[key] = (data, sr)
+            except Exception:
+                pass
+
+        self._prefetch_thread = threading.Thread(target=_do, daemon=True)
+        self._prefetch_thread.start()
+
+    def _get_cached(self, text: str):
+        """Retorna áudio do cache se disponível, ou (None, 0)."""
+        key = hash(text)
+        with self._cache_lock:
+            return self._cache.pop(key, (None, 0))
+
+    def _wait_for_prefetch(self, text: str, stop_event, skip_event) -> tuple:
+        """
+        Se o prefetch está em andamento para este texto, espera ele terminar.
+        Retorna (data, sr) se disponível, ou (None, 0).
+        """
+        key = hash(text)
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            # Espera até 10s pelo prefetch em andamento
+            deadline = time.monotonic() + 10
+            while self._prefetch_thread.is_alive() and time.monotonic() < deadline:
+                if (stop_event and stop_event.is_set()) or (skip_event and skip_event.is_set()):
+                    return None, 0
+                time.sleep(0.05)
+
+        with self._cache_lock:
+            return self._cache.pop(key, (None, 0))
+
+    # ------------------------------------------------------------------
+    # Reprodução síncrona
+    # ------------------------------------------------------------------
+
     def speak_sync(
         self,
         text: str,
         stop_event: Optional[threading.Event] = None,
         skip_event: Optional[threading.Event] = None,
         pause_event: Optional[threading.Event] = None,
+        on_playing: Optional[Callable] = None,
     ):
         """
         Gera áudio e toca de forma síncrona.
         Respeita stop_event (sair), skip_event (pular) e pause_event (pausar).
+
+        on_playing: chamado logo após o início da reprodução — use para
+                    disparar prefetch do próximo parágrafo enquanto este toca.
         """
-        # Geração em thread separada para poder abortar
-        result = [None, 0]
-        gen_done = threading.Event()
+        # 1. Verificar cache (pré-buffer do parágrafo anterior)
+        data, sr = self._get_cached(text)
 
-        def _generate():
-            result[0], result[1] = self.generate_audio(text)
-            gen_done.set()
+        if data is None:
+            # 2. Verificar se prefetch está em andamento para este texto
+            data, sr = self._wait_for_prefetch(text, stop_event, skip_event)
 
-        gen_thread = threading.Thread(target=_generate, daemon=True)
-        gen_thread.start()
+        if data is None:
+            # 3. Gerar agora (fallback síncrono com suporte a abort)
+            result = [None, 0]
+            gen_done = threading.Event()
 
-        # Aguarda geração com checagem de eventos
-        while not gen_done.is_set():
-            if (stop_event and stop_event.is_set()) or (skip_event and skip_event.is_set()):
-                return
-            time.sleep(0.05)
+            def _generate():
+                result[0], result[1] = self.generate_audio(text)
+                gen_done.set()
 
-        data, sr = result[0], result[1]
+            gen_thread = threading.Thread(target=_generate, daemon=True)
+            gen_thread.start()
+
+            while not gen_done.is_set():
+                if (stop_event and stop_event.is_set()) or (skip_event and skip_event.is_set()):
+                    return
+                time.sleep(0.05)
+
+            data, sr = result[0], result[1]
+
         if data is None:
             return
 
-        # Reprodução
+        if (stop_event and stop_event.is_set()) or (skip_event and skip_event.is_set()):
+            return
+
+        # 4. Iniciar reprodução
         done = threading.Event()
         self._player.play(data, sr, on_complete=done.set)
 
+        # 5. Disparar callback on_playing (para prefetch do próximo parágrafo)
+        if on_playing:
+            on_playing()
+
+        # 6. Aguardar fim respeitando eventos
         while not done.is_set():
             if (stop_event and stop_event.is_set()) or (skip_event and skip_event.is_set()):
                 self._player.stop()
@@ -246,3 +335,6 @@ class TTSEngine:
 
     def stop(self):
         self._player.stop()
+        # Limpa cache ao parar (evita reproduzir áudio obsoleto após skip)
+        with self._cache_lock:
+            self._cache.clear()
