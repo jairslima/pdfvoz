@@ -9,3 +9,9 @@ secrets.*
 *.pkl
 temp_audio/
 *.tmp
+
+# Seguranca — auditoria 2026-05-28
+*.pem
+credentials.*
+*.p12
+*.pfx
