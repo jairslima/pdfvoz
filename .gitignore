@@ -15,3 +15,6 @@ temp_audio/
 credentials.*
 *.p12
 *.pfx
+
+# Security patterns
+.env.*
